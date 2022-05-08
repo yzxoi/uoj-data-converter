@@ -6,111 +6,313 @@ on:
       - "*"
 
 env:
-  QT_VERSION: 5.12.9
+  QT_VERSION: 5.15.2
+  WINLIBS_GCC: 11.2.0
+  WINLIBS_LLVM: 12.0.1
+  WINLIBS_MINGW: 9.0.0-r1
 
 jobs:
+  # "env" is only available in jobs, we need to convert them to outputs so that they can be used in the matrix
+  get-winlibs-outputs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get winlibs outputs
+        id: get
+        run: |
+          echo ::set-output name=GCC::$WINLIBS_GCC
+          echo ::set-output name=LLVM::$WINLIBS_LLVM
+          echo ::set-output name=MINGW::$WINLIBS_MINGW
+          echo ::set-output name=tag::$WINLIBS_GCC-$WINLIBS_LLVM-$WINLIBS_MINGW
+    outputs:
+      GCC: ${{ steps.get.outputs.GCC }}
+      LLVM: ${{ steps.get.outputs.LLVM }}
+      MINGW: ${{ steps.get.outputs.MINGW }}
+      tag: ${{ steps.get.outputs.tag }}
+
   release:
-    name: "release on ${{ matrix.os }}"
-    runs-on: "${{ matrix.os }}"
+    name: "OS: ${{ matrix.config.os }} Arch: ${{ matrix.config.arch }} Portable: ${{ matrix.config.portable-option }} Winlibs: ${{ matrix.config.winlibs }}"
+    runs-on: "${{ matrix.config.os }}"
+    needs: get-winlibs-outputs
     strategy:
       fail-fast: false
       matrix:
-        os: ["ubuntu-16.04", "windows-latest"]
+        config:
+          - os: "ubuntu-18.04"
+            portable-option: "Off"
+            winlibs: false
+          - os: "macos-latest"
+            portable-option: "Off"
+            winlibs: false
+          - os: "windows-latest"
+            arch: x64
+            platform: x64
+            qtarch: win64_msvc2019_64
+            portable-option: "Off"
+            filename-suffix: "setup.exe"
+            winlibs: false
+          - os: "windows-latest"
+            arch: x64
+            platform: x64
+            qtarch: win64_msvc2019_64
+            portable-option: "On"
+            filename-suffix: "portable.zip"
+            winlibs: false
+          - os: "windows-latest"
+            arch: x86
+            platform: Win32
+            qtarch: win32_msvc2019
+            portable-option: "Off"
+            filename-suffix: "setup.exe"
+            winlibs: false
+          - os: "windows-latest"
+            arch: x86
+            platform: Win32
+            qtarch: win32_msvc2019
+            portable-option: "On"
+            filename-suffix: "portable.zip"
+            winlibs: false
+          - os: "windows-latest"
+            arch: x64
+            platform: x64
+            qtarch: win64_msvc2019_64
+            portable-option: "Off"
+            filename-suffix: "setup-with-gcc-${{ needs.get-winlibs-outputs.outputs.GCC }}-LLVM-${{ needs.get-winlibs-outputs.outputs.LLVM }}.exe"
+            winlibs: true
+            winlibs-arch: x86_64-posix-seh
+            mingw-arch: mingw64
+          - os: "windows-latest"
+            arch: x64
+            platform: x64
+            qtarch: win64_msvc2019_64
+            portable-option: "On"
+            filename-suffix: "portable-with-gcc-${{ needs.get-winlibs-outputs.outputs.GCC }}-LLVM-${{ needs.get-winlibs-outputs.outputs.LLVM }}.zip"
+            winlibs: true
+            winlibs-arch: x86_64-posix-seh
+            mingw-arch: mingw64
+          - os: "windows-latest"
+            arch: x86
+            platform: Win32
+            qtarch: win32_msvc2019
+            portable-option: "Off"
+            filename-suffix: "setup-with-gcc-${{ needs.get-winlibs-outputs.outputs.GCC }}-LLVM-${{ needs.get-winlibs-outputs.outputs.LLVM }}.exe"
+            winlibs: true
+            winlibs-arch: i686-posix-dwarf
+            mingw-arch: mingw32
+          - os: "windows-latest"
+            arch: x86
+            platform: Win32
+            qtarch: win32_msvc2019
+            portable-option: "On"
+            filename-suffix: "portable-with-gcc-${{ needs.get-winlibs-outputs.outputs.GCC }}-LLVM-${{ needs.get-winlibs-outputs.outputs.LLVM }}.zip"
+            winlibs: true
+            winlibs-arch: i686-posix-dwarf
+            mingw-arch: mingw32
+
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
         with:
           submodules: recursive
-          fetch-depth: 0
 
-      - name: Install Python 3.7
-        uses: actions/setup-python@v1
-        with:
-          python-version: 3.7
-
-      - name: Install Qt on Ubuntu
-        if: startsWith(matrix.os, 'ubuntu')
-        run: |
-          sudo add-apt-repository ppa:beineri/opt-qt-${QT_VERSION}-xenial -y
-          sudo apt-get update -qq
-          sudo apt-get -y install qt512base libgl1-mesa-dev qt512svg qt512imageformats
-          bash /opt/qt*/bin/qt*-env.sh
-
-      - name: Restore Qt from cache on Windows
-        if: startsWith(matrix.os, 'windows')
-        id: cache-qt
-        uses: actions/cache@v1
-        with:
-          path: ../Qt
-          key: Qt-${{ matrix.os }}-${{ env.QT_VERSION }}
-
-      - name: Set up Qt environment on Windows
-        if: startsWith(matrix.os, 'windows')
+      - name: Set up Qt environment
         uses: jurplel/install-qt-action@v2
         with:
-          cached: ${{ steps.cache-qt.outputs.cache-hit }}
           version: ${{ env.QT_VERSION }}
+          arch: ${{ matrix.config.qtarch }}
 
-      - name: Build
+      - name: "[Windows] Build"
+        if: matrix.config.os == 'windows-latest'
         run: |
           mkdir build
           cd build
-          cmake .. -DCMAKE_BUILD_TYPE=Release
-          cmake --build . --config Release -j2
-
+          cmake .. -A ${{ matrix.config.platform }} -DPORTABLE_VERSION=${{ matrix.config.portable-option }}
+          cmake --build . --config Release -j4
+      - name: "[Linux/macOS] Build"
+        if: matrix.config.os != 'windows-latest'
+        run: |
+          mkdir build
+          cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release -DPORTABLE_VERSION=${{ matrix.config.portable-option }}
+          cmake --build . --config Release -j4
       - name: Get the version
         id: get_version
         shell: bash
-        run: echo ::set-output name=VERSION::${GITHUB_REF/refs\/tags\//}
-
-      - name: Pack to AppImage
-        if: startsWith(matrix.os, 'ubuntu')
         run: |
-          bash /opt/qt*/bin/qt*-env.sh
+          VERSION=${GITHUB_REF/refs\/tags\//}
+          echo ::set-output name=VERSION::$VERSION
+          STABLE_VERSION=$(cat dist/STABLE_VERSION)
+          if [[ $VERSION == "$STABLE_VERSION"* ]]; then
+            echo ::set-output name=ISBETA::false
+          else
+            echo ::set-output name=ISBETA::true
+          fi
+      - name: "[Linux] Pack to AppImage"
+        if: startsWith(matrix.config.os, 'ubuntu')
+        run: |
+          sudo apt install libxcb*
           cd build
           wget -c "https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage"
           chmod a+x linuxdeployqt*.AppImage
           export VERSION=${{ steps.get_version.outputs.VERSION }}
-          cp ../.ci/linux/uoj-data-converter.desktop default.desktop
-          cp ../.ci/linux/icon.png uoj-data-converter.png
-          ./linuxdeployqt*.AppImage ./uoj-data-converter -appimage -qmake=/opt/qt512/bin/qmake
-          mv UOJ_Data_Converter-${{steps.get_version.outputs.VERSION }}-x86_64.AppImage uoj-data-converter-${{ steps.get_version.outputs.VERSION }}-linux-x86_64.AppImage
-
-      - name: Release AppImage
-        if: startsWith(matrix.os, 'ubuntu')
+          cp ../dist/linux/uoj-data-converter.desktop default.desktop
+          cp ../resources/icon.png uoj-data-converter.png
+          ./linuxdeployqt*.AppImage ./uoj-data-converter -appimage -qmake=../../Qt/${{ env.QT_VERSION }}/gcc_64/bin/qmake
+          mv CP_Editor-${{steps.get_version.outputs.VERSION }}-x86_64.AppImage uoj-data-converter-${{ steps.get_version.outputs.VERSION }}-linux-x86_64.AppImage
+      - name: "[Linux] Release AppImage"
+        if: startsWith(matrix.config.os, 'ubuntu')
         uses: softprops/action-gh-release@v1
         with:
           draft: true
-          prerelease: true
+          prerelease: ${{ steps.get_version.outputs.ISBETA }}
           files: build/uoj-data-converter-${{ steps.get_version.outputs.VERSION }}-linux-x86_64.AppImage
-          name: UOJ Data Converter ${{ steps.get_version.outputs.VERSION }}
+          name: CP Editor ${{ steps.get_version.outputs.VERSION }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Gather dependencies on Windows
-        if: startsWith(matrix.os, 'windows')
+      - name: "[Linux] Pack to deb"
+        if: startsWith(matrix.config.os, 'ubuntu')
+        id: deb-package
+        run: |
+          pkgname="uoj-data-converter-${{ steps.get_version.outputs.VERSION }}-linux-amd64"
+          echo "::set-output name=pkgname::${pkgname}"
+          mkdir -p ${pkgname}/usr/share/
+          cd ${pkgname}/usr/share/
+          mkdir applications/
+          cp ${{ github.workspace }}/dist/linux/uoj-data-converter.desktop ./applications
+          mkdir -p uoj-data-converter/bin/
+          cp ${{ github.workspace }}/dist/DEB/uoj-data-converter.sh ./uoj-data-converter/
+          cp -r ${{ github.workspace }}/build/plugins/ ./uoj-data-converter
+          cp ${{ github.workspace }}/build/uoj-data-converter ./uoj-data-converter/bin/
+          mkdir -p doc/uoj-data-converter/
+          cp ${{ github.workspace }}/LICENSE ./doc/uoj-data-converter/copyright
+          mkdir icons/
+          cp ${{ github.workspace }}/resources/icon.png ./icons/uoj-data-converter.png
+          cp -r ${{ github.workspace }}/build/translations/ ./uoj-data-converter
+          cd ../
+          mkdir -p lib/uoj-data-converter/
+          cp ${{ github.workspace }}/build/lib/* ./lib/uoj-data-converter
+          cd ..
+          cp -r ${{ github.workspace }}/dist/DEB/DEBIAN .
+          wget -c "http://archive.ubuntu.com/ubuntu/pool/universe/h/hashdeep/md5deep_4.4-4_all.deb"
+          wget -c "http://archive.ubuntu.com/ubuntu/pool/universe/h/hashdeep/hashdeep_4.4-4_amd64.deb"
+          sudo apt install ./*.deb
+          rm *.deb
+          md5deep -rl usr/ > ./DEBIAN/md5sums
+          cd DEBIAN
+          chmod 775 p*
+          sed -i "s/\${ver}/${{ steps.get_version.outputs.VERSION }}/" control
+          SIZE=$(du -s ../../${pkgname} | cut -f1)
+          sed -i "s/\${size}/${SIZE}/" control
+          cd ${{ github.workspace }}/
+          fakeroot dpkg-deb --build ${pkgname}
+      - name: "[Linux] Release deb"
+        if: startsWith(matrix.config.os, 'ubuntu')
+        uses: softprops/action-gh-release@v1
+        with:
+          draft: true
+          prerelease: ${{ steps.get_version.outputs.ISBETA }}
+          files: ${{ steps.deb-package.outputs.pkgname }}.deb
+          name: CP Editor ${{ steps.get_version.outputs.VERSION }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "[Linux] Package full Source"
+        if: startsWith(matrix.config.os, 'ubuntu')
+        run: |
+          shopt -s extglob # enable "!(...)"
+          mv .git/objects/pack .
+          git unpack-objects < pack/*.pack
+          rm -rf pack .git/objects/!($(git rev-parse @ | cut -c-2)) .git/objects/$(git rev-parse @ | cut -c-2)/!($(git rev-parse @ | cut -c3-))
+          wget https://raw.githubusercontent.com/Kentzo/git-archive-all/master/git_archive_all.py
+          python3 git_archive_all.py uoj-data-converter-${{ steps.get_version.outputs.VERSION }}-full-source.tar.gz --extra=.git/HEAD --extra=.git/refs --extra=.git/objects
+      - name: "[Linux] Release full source"
+        if: startsWith(matrix.config.os, 'ubuntu')
+        uses: softprops/action-gh-release@v1
+        with:
+          draft: true
+          prerelease: ${{ steps.get_version.outputs.ISBETA }}
+          files: uoj-data-converter-${{ steps.get_version.outputs.VERSION }}-full-source.tar.gz
+          name: CP Editor ${{ steps.get_version.outputs.VERSION }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "[macOS] Pack to dmg"
+        if: startsWith(matrix.config.os, 'macos')
+        run: |
+          cd build
+          mkdir dmg
+          cd dmg
+          mv ../uoj-data-converter.app uoj-data-converter.app 
+          ../../../Qt/*/*/bin/macdeployqt uoj-data-converter.app
+          cp ../../dist/mac/uoj-data-converter.icns uoj-data-converter.app/Contents/Resources
+          ln -s /Applications Applications
+          hdiutil create -volname uoj-data-converter-${{ steps.get_version.outputs.VERSION }}-x64 -srcfolder . -ov -format UDZO uoj-data-converter-${{ steps.get_version.outputs.VERSION }}-macos-x64.dmg
+      - name: "[macOS] Release"
+        if: startsWith(matrix.config.os, 'macos')
+        uses: softprops/action-gh-release@v1
+        with:
+          draft: true
+          prerelease: ${{ steps.get_version.outputs.ISBETA }}
+          files: build/dmg/uoj-data-converter-${{ steps.get_version.outputs.VERSION }}-macos-x64.dmg
+          name: CP Editor ${{ steps.get_version.outputs.VERSION }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "[Windows] Gather dependencies"
+        if: startsWith(matrix.config.os, 'windows')
         shell: bash
         run: |
           mkdir build/out
           mv build/Release/uoj-data-converter.exe build/out
           ../Qt/*/*/bin/windeployqt.exe build/out/uoj-data-converter.exe --no-translations
           cd "C:/Program Files (x86)/Microsoft Visual Studio/2019/Enterprise/VC/Redist/MSVC"
-          echo "VC_REDIST_VERSION=\"$(ls -dr *.* | head -n1)\"" >> $GITHUB_ENV
+          echo "VC_REDIST_VERSION=$(ls -dr *.* | head -n1)" >> $GITHUB_ENV
+      - name: "[Windows] Get Winlibs asset name"
+        if: startsWith(matrix.config.os, 'windows') && matrix.config.winlibs
+        id: winlibs
+        shell: bash
+        run: echo "::set-output name=asset::winlibs-${{ matrix.config.winlibs-arch }}-gcc-${{ needs.get-winlibs-outputs.outputs.GCC }}-llvm-${{ needs.get-winlibs-outputs.outputs.LLVM }}-mingw-w64-${{ needs.get-winlibs-outputs.outputs.MINGW }}.7z"
 
-      - name: Pack to installer on Windows
-        if: startsWith(matrix.os, 'windows')
+      - name: "[Windows] Download Winlibs"
+        if: startsWith(matrix.config.os, 'windows') && matrix.config.winlibs
+        uses: robinraju/release-downloader@v1
+        with:
+          repository: brechtsanders/winlibs_mingw
+          tag: ${{ needs.get-winlibs-outputs.outputs.tag }}
+          fileName: ${{ steps.winlibs.outputs.asset }}
+
+      - name: "[Windows] Extract Winlibs"
+        if: startsWith(matrix.config.os, 'windows') && matrix.config.winlibs
+        shell: bash
+        run: 7z x ${{ steps.winlibs.outputs.asset }} -obuild/out
+
+      - name: "[Windows] Pack to installer"
+        if: startsWith(matrix.config.os, 'windows') && matrix.config.portable-option == 'Off'
         shell: bash
         run: |
           mkdir build/out/Redist
-          cp "C:/Program Files (x86)/Microsoft Visual Studio/2019/Enterprise/VC/Redist/MSVC/$VC_REDIST_VERSION/vc_redist.x64.exe" build/out/Redist
-          iscc .ci/win/win-setup.iss -DMyAppVersion=${{ steps.get_version.outputs.VERSION }} -DMyProjectRoot=$(pwd) -DMyOutRoot=$(pwd)/build/out -DVC_REDIST_VERSION=$VC_REDIST_VERSION
-
-      - name: Release on Windows
-        if: startsWith(matrix.os, 'windows')
+          cp "C:/Program Files (x86)/Microsoft Visual Studio/2019/Enterprise/VC/Redist/MSVC/$VC_REDIST_VERSION/vc_redist.${{ matrix.config.arch }}.exe" build/out/Redist
+          iscc dist/win/win-setup.iss \
+            -DArch=${{ matrix.config.arch }} \
+            $([[ "${{ matrix.config.winlibs }}" == "true" ]] && echo '-DGccDir=${{ matrix.config.mingw-arch }}' || echo '') \
+            -DMyAppVersion=${{ steps.get_version.outputs.VERSION }} \
+            -DMyProjectRoot=$(pwd) \
+            -DMyOutRoot=$(pwd)/build/out \
+            -DVC_REDIST_VERSION=$VC_REDIST_VERSION
+          mv uoj-data-converter-setup.exe uoj-data-converter-${{ steps.get_version.outputs.VERSION }}-windows-${{ matrix.config.arch }}-${{ matrix.config.filename-suffix }}
+      - name: "[Windows] Pack to portable"
+        if: startsWith(matrix.config.os, 'windows') && matrix.config.portable-option == 'On'
+        shell: bash
+        run: |
+          cp "C:/Program Files (x86)/Microsoft Visual Studio"/2019/Enterprise/VC/Redist/MSVC/$VC_REDIST_VERSION/${{ matrix.config.arch }}/Microsoft.*.CRT/*.dll build/out
+          cd build/out
+          7z a ../../uoj-data-converter-${{ steps.get_version.outputs.VERSION }}-windows-${{ matrix.config.arch }}-${{ matrix.config.filename-suffix }} ./*
+      - name: "[Windows] Release"
+        if: startsWith(matrix.config.os, 'windows')
         uses: softprops/action-gh-release@v1
         with:
           draft: true
-          prerelease: true
-          files: uoj-data-converter-${{ steps.get_version.outputs.VERSION }}-windows-x64-setup.exe
-          name: UOJ Data Converter ${{ steps.get_version.outputs.VERSION }}
+          prerelease: ${{ steps.get_version.outputs.ISBETA }}
+          files: uoj-data-converter-${{ steps.get_version.outputs.VERSION }}-windows-${{ matrix.config.arch }}-${{ matrix.config.filename-suffix }}
+          name: CP Editor ${{ steps.get_version.outputs.VERSION }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
